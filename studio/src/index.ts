@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 
 // Import configs
 import "./config/hedera.js";
+import "./config/firebase.js";
 
 
 dotenv.config();
