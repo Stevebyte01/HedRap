@@ -1,0 +1,19 @@
+# HedRap Token credentials
+HEDRAP_TOKEN_ID=0.0.7153640
+HEDRAP_TOKEN_EVM_ADDRESS=0x0740870725A35bBDdc91d76C52055C3f8AcDc331
+TESTNET_URL=https://hashscan.io/testnet/contract/0.0.7153640
+
+# DAO credentials
+JUDGE_DAO_ID=0.0.7153654
+JUDGE_DAO_EVM_ADDRESS=0xcacbf2c2f6b458b550180dbfc7b041c44f46d1e3
+TESTNET_URL=https://hashscan.io/testnet/contract/0.0.7153654
+
+# Admin credentials
+ACCOUNT_ID=0.0.7134180
+ACCOUNT_EVM_ADDRESS=0x21e7866ff01d4443d65b684e3b4e7861b284f098
+TESTNET_URL=https://hashscan.io/testnet/account/0.0.7134180
+
+# BattleVoting contract
+BATTLE_VOTING_ID=0.0.7162113
+BATTLE_VOTING_EVM_ADDRESS=0xa25eFa925e5218D7887b7dB01D0fbeeD20992d4E
+TESTNET_URL=https://hashscan.io/testnet/contract/0.0.7162113
