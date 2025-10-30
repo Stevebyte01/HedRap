@@ -3,23 +3,27 @@ pragma solidity ^0.8.27;
 
 /**
  * @title BattleManager
- * @dev Manages battle rap competitions with community voting on Hedera
+ * @dev Manages battle rap competitions with weighted voting (70% judges, 30% fans)
  * @notice This contract handles battle creation, voting, and result determination
  */
 contract BattleManager {
     struct Battle {
-        uint256 id;
-        string rapper1Name;
-        string rapper2Name;
         address rapper1Address;
         address rapper2Address;
-        uint256 rapper1Votes;
-        uint256 rapper2Votes;
-        uint256 startTime;
-        uint256 endTime;
-        string videoUrl;
-        BattleStatus status;
         address winner;
+        uint256 rapper1FanVotes;
+        uint256 rapper2FanVotes;
+        uint256 rapper1JudgeVotes;
+        uint256 rapper2JudgeVotes;
+        uint256 endTime;
+        BattleStatus status;
+    }
+
+    struct BattleInfo {
+        string rapper1Name;
+        string rapper2Name;
+        string videoUrl;
+        uint256 startTime;
     }
 
     enum BattleStatus {
@@ -31,20 +35,25 @@ contract BattleManager {
     // State variables
     address public owner;
     uint256 public battleCount;
-    uint256 public votingFee = 100000000; // 0.1 HBAR in tinybars
+    uint256 public votingFee = 10; // 10 HBAR
+
+    // Voting weights
+    uint256 public constant JUDGE_WEIGHT = 7000; // 70%
+    uint256 public constant FAN_WEIGHT = 3000; // 30%
 
     mapping(uint256 => Battle) public battles;
+    mapping(uint256 => BattleInfo) public battleInfo;
     mapping(uint256 => mapping(address => bool)) public hasVoted;
     mapping(address => uint256) public judgeReputation;
+    mapping(address => bool) public isJudge;
 
     address[] public certifiedJudges;
 
-    // Events for Hedera Mirror Node tracking
+    // Events
     event BattleCreated(
         uint256 indexed battleId,
         string rapper1Name,
         string rapper2Name,
-        uint256 startTime,
         uint256 endTime
     );
 
@@ -52,242 +61,281 @@ contract BattleManager {
         uint256 indexed battleId,
         address indexed voter,
         uint8 rapperChoice,
-        uint256 timestamp
+        bool isJudgeVote
     );
 
     event BattleEnded(
         uint256 indexed battleId,
         address winner,
-        uint256 rapper1Votes,
-        uint256 rapper2Votes
+        uint256 score1,
+        uint256 score2
     );
 
-    event JudgeAdded(address indexed judge, uint256 timestamp);
+    event JudgeAdded(address indexed judge);
+    event JudgeRemoved(address indexed judge);
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call");
+        require(msg.sender == owner, "Only owner");
         _;
     }
 
-    modifier battleExists(uint256 _battleId) {
-        require(_battleId < battleCount, "Battle does not exist");
+    modifier battleExists(uint256 _id) {
+        require(_id < battleCount, "Battle not exist");
         _;
     }
 
-    modifier battleActive(uint256 _battleId) {
-        require(
-            battles[_battleId].status == BattleStatus.Active,
-            "Battle not active"
-        );
-        require(block.timestamp < battles[_battleId].endTime, "Voting ended");
+    modifier battleActive(uint256 _id) {
+        require(battles[_id].status == BattleStatus.Active, "Not active");
+        require(block.timestamp < battles[_id].endTime, "Ended");
         _;
     }
 
     constructor() {
         owner = msg.sender;
-        battleCount = 0;
     }
 
     /**
      * @dev Create a new battle
-     * @param _rapper1Name Name of first rapper
-     * @param _rapper2Name Name of second rapper
-     * @param _rapper1Address Hedera account of rapper 1
-     * @param _rapper2Address Hedera account of rapper 2
-     * @param _durationMinutes How long voting stays open
-     * @param _videoUrl Link to battle video
      */
     function createBattle(
-        string memory _rapper1Name,
-        string memory _rapper2Name,
-        address _rapper1Address,
-        address _rapper2Address,
-        uint256 _durationMinutes,
-        string memory _videoUrl
+        string calldata _name1,
+        string calldata _name2,
+        address _addr1,
+        address _addr2,
+        uint256 _duration,
+        string calldata _video
     ) external onlyOwner returns (uint256) {
-        require(_rapper1Address != _rapper2Address, "Same rapper address");
-        require(_durationMinutes > 0, "Invalid duration");
+        require(_addr1 != _addr2, "Same address");
+        require(_duration > 0, "Invalid duration");
 
-        uint256 battleId = battleCount;
-        uint256 endTime = block.timestamp + (_durationMinutes * 60);
+        uint256 id = battleCount++;
 
-        battles[battleId] = Battle({
-            id: battleId,
-            rapper1Name: _rapper1Name,
-            rapper2Name: _rapper2Name,
-            rapper1Address: _rapper1Address,
-            rapper2Address: _rapper2Address,
-            rapper1Votes: 0,
-            rapper2Votes: 0,
-            startTime: block.timestamp,
-            endTime: endTime,
-            videoUrl: _videoUrl,
-            status: BattleStatus.Active,
-            winner: address(0)
-        });
+        battles[id].rapper1Address = _addr1;
+        battles[id].rapper2Address = _addr2;
+        battles[id].endTime = block.timestamp + (_duration * 60);
+        battles[id].status = BattleStatus.Active;
 
-        battleCount++;
+        battleInfo[id].rapper1Name = _name1;
+        battleInfo[id].rapper2Name = _name2;
+        battleInfo[id].videoUrl = _video;
+        battleInfo[id].startTime = block.timestamp;
 
-        emit BattleCreated(
-            battleId,
-            _rapper1Name,
-            _rapper2Name,
-            block.timestamp,
-            endTime
-        );
-
-        return battleId;
+        emit BattleCreated(id, _name1, _name2, battles[id].endTime);
+        return id;
     }
 
     /**
-     * @dev Cast a vote for a rapper
-     * @param _battleId ID of the battle
-     * @param _rapperChoice 1 for rapper1, 2 for rapper2
+     * @dev Cast a vote
      */
     function vote(
-        uint256 _battleId,
-        uint8 _rapperChoice
-    ) external payable battleExists(_battleId) battleActive(_battleId) {
-        require(!hasVoted[_battleId][msg.sender], "Already voted");
-        require(_rapperChoice == 1 || _rapperChoice == 2, "Invalid choice");
-        require(msg.value >= votingFee, "Insufficient voting fee");
+        uint256 _id,
+        uint8 _choice
+    ) external payable battleExists(_id) battleActive(_id) {
+        require(!hasVoted[_id][msg.sender], "Already voted");
+        require(_choice == 1 || _choice == 2, "Invalid choice");
+        require(msg.value >= votingFee, "Insufficient fee");
 
-        hasVoted[_battleId][msg.sender] = true;
+        hasVoted[_id][msg.sender] = true;
+        bool judgeVote = isJudge[msg.sender];
 
-        if (_rapperChoice == 1) {
-            battles[_battleId].rapper1Votes++;
+        if (_choice == 1) {
+            if (judgeVote) {
+                battles[_id].rapper1JudgeVotes++;
+            } else {
+                battles[_id].rapper1FanVotes++;
+            }
         } else {
-            battles[_battleId].rapper2Votes++;
+            if (judgeVote) {
+                battles[_id].rapper2JudgeVotes++;
+            } else {
+                battles[_id].rapper2FanVotes++;
+            }
         }
 
-        emit VoteCast(_battleId, msg.sender, _rapperChoice, block.timestamp);
+        emit VoteCast(_id, msg.sender, _choice, judgeVote);
     }
 
     /**
-     * @dev End a battle and determine winner
-     * @param _battleId ID of the battle to end
+     * @dev Calculate weighted score
      */
-    function endBattle(
-        uint256 _battleId
-    ) external onlyOwner battleExists(_battleId) {
-        require(
-            battles[_battleId].status == BattleStatus.Active,
-            "Battle not active"
-        );
-        require(
-            block.timestamp >= battles[_battleId].endTime,
-            "Voting still open"
-        );
+    function getScore(
+        uint256 _jVotes,
+        uint256 _fVotes,
+        uint256 _totalJ,
+        uint256 _totalF
+    ) internal pure returns (uint256) {
+        uint256 s = 0;
+        if (_totalJ > 0) s += (_jVotes * JUDGE_WEIGHT) / _totalJ;
+        if (_totalF > 0) s += (_fVotes * FAN_WEIGHT) / _totalF;
+        return s;
+    }
 
-        Battle storage battle = battles[_battleId];
-        battle.status = BattleStatus.Ended;
+    /**
+     * @dev End battle
+     */
+    function endBattle(uint256 _id) external onlyOwner battleExists(_id) {
+        Battle storage b = battles[_id];
+        require(b.status == BattleStatus.Active, "Not active");
+        require(block.timestamp >= b.endTime, "Not ended");
 
-        // Determine winner
-        if (battle.rapper1Votes > battle.rapper2Votes) {
-            battle.winner = battle.rapper1Address;
-        } else if (battle.rapper2Votes > battle.rapper1Votes) {
-            battle.winner = battle.rapper2Address;
+        b.status = BattleStatus.Ended;
+
+        uint256 tj = b.rapper1JudgeVotes + b.rapper2JudgeVotes;
+        uint256 tf = b.rapper1FanVotes + b.rapper2FanVotes;
+
+        uint256 s1 = getScore(b.rapper1JudgeVotes, b.rapper1FanVotes, tj, tf);
+        uint256 s2 = getScore(b.rapper2JudgeVotes, b.rapper2FanVotes, tj, tf);
+
+        if (s1 > s2) {
+            b.winner = b.rapper1Address;
+        } else if (s2 > s1) {
+            b.winner = b.rapper2Address;
         }
-        // If tie, winner remains address(0)
 
-        emit BattleEnded(
-            _battleId,
-            battle.winner,
-            battle.rapper1Votes,
-            battle.rapper2Votes
+        emit BattleEnded(_id, b.winner, s1, s2);
+    }
+
+    /**
+     * @dev Add judge
+     */
+    function addJudge(address _j) external onlyOwner {
+        require(_j != address(0), "Invalid");
+        require(!isJudge[_j], "Exists");
+
+        certifiedJudges.push(_j);
+        isJudge[_j] = true;
+        judgeReputation[_j] = 100;
+
+        emit JudgeAdded(_j);
+    }
+
+    /**
+     * @dev Remove judge
+     */
+    function removeJudge(address _j) external onlyOwner {
+        require(isJudge[_j], "Not judge");
+        isJudge[_j] = false;
+        judgeReputation[_j] = 0;
+        emit JudgeRemoved(_j);
+    }
+
+    /**
+     * @dev Get battle with scores
+     */
+    function getBattleWithScores(uint256 _id)
+        external
+        view
+        battleExists(_id)
+        returns (
+            Battle memory,
+            BattleInfo memory,
+            uint256,
+            uint256
+        )
+    {
+        Battle memory b = battles[_id];
+        BattleInfo memory info = battleInfo[_id];
+
+        uint256 tj = b.rapper1JudgeVotes + b.rapper2JudgeVotes;
+        uint256 tf = b.rapper1FanVotes + b.rapper2FanVotes;
+
+        return (
+            b,
+            info,
+            getScore(b.rapper1JudgeVotes, b.rapper1FanVotes, tj, tf),
+            getScore(b.rapper2JudgeVotes, b.rapper2FanVotes, tj, tf)
         );
     }
 
     /**
-     * @dev Add a certified judge
-     * @param _judge Address of the judge
+     * @dev Get battle
      */
-    function addJudge(address _judge) external onlyOwner {
-        require(_judge != address(0), "Invalid address");
-        certifiedJudges.push(_judge);
-        judgeReputation[_judge] = 100; // Starting reputation
-
-        emit JudgeAdded(_judge, block.timestamp);
+    function getBattle(uint256 _id)
+        external
+        view
+        battleExists(_id)
+        returns (Battle memory, BattleInfo memory)
+    {
+        return (battles[_id], battleInfo[_id]);
     }
 
     /**
-     * @dev Get battle details
+     * @dev Check voted
      */
-    function getBattle(
-        uint256 _battleId
-    ) external view battleExists(_battleId) returns (Battle memory) {
-        return battles[_battleId];
+    function checkVoted(uint256 _id, address _voter)
+        external
+        view
+        returns (bool)
+    {
+        return hasVoted[_id][_voter];
     }
 
     /**
-     * @dev Check if user has voted
+     * @dev Check if judge
      */
-    function checkVoted(
-        uint256 _battleId,
-        address _voter
-    ) external view returns (bool) {
-        return hasVoted[_battleId][_voter];
+    function checkIsJudge(address _a) external view returns (bool) {
+        return isJudge[_a];
     }
 
     /**
-     * @dev Get all active battles
+     * @dev Get active battles
      */
     function getActiveBattles() external view returns (uint256[] memory) {
-        uint256 activeCount = 0;
-
-        // Count active battles
+        uint256 c = 0;
         for (uint256 i = 0; i < battleCount; i++) {
-            if (
-                battles[i].status == BattleStatus.Active &&
-                block.timestamp < battles[i].endTime
-            ) {
-                activeCount++;
+            if (battles[i].status == BattleStatus.Active && block.timestamp < battles[i].endTime) {
+                c++;
             }
         }
 
-        // Create array of active battle IDs
-        uint256[] memory activeBattles = new uint256[](activeCount);
-        uint256 index = 0;
-
+        uint256[] memory r = new uint256[](c);
+        uint256 idx = 0;
         for (uint256 i = 0; i < battleCount; i++) {
-            if (
-                battles[i].status == BattleStatus.Active &&
-                block.timestamp < battles[i].endTime
-            ) {
-                activeBattles[index] = i;
-                index++;
+            if (battles[i].status == BattleStatus.Active && block.timestamp < battles[i].endTime) {
+                r[idx++] = i;
             }
         }
-
-        return activeBattles;
+        return r;
     }
 
     /**
-     * @dev Withdraw contract balance with split: 70% to rappers (35% each), 30% to owner
+     * @dev Get all judges
      */
-    function withdraw(uint battleId) external onlyOwner {
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No funds to withdraw");
+    function getAllJudges() external view returns (address[] memory) {
+        uint256 c = 0;
+        for (uint256 i = 0; i < certifiedJudges.length; i++) {
+            if (isJudge[certifiedJudges[i]]) c++;
+        }
 
-        // Calculate splits
-        uint256 rapperShare = (balance * 35) / 100; // 35% for each rapper
-        uint256 ownerShare = balance - (rapperShare * 2); // Remaining 30% to owner
+        address[] memory r = new address[](c);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < certifiedJudges.length; i++) {
+            if (isJudge[certifiedJudges[i]]) {
+                r[idx++] = certifiedJudges[i];
+            }
+        }
+        return r;
+    }
 
-        // Collect rappers' address for each battleId
-        address rapper1 = battles[battleId].rapper1Address;
-        address rapper2 = battles[battleId].rapper2Address;
-        // Transfer to rappers
-        payable(rapper1).transfer(rapperShare);
-        payable(rapper2).transfer(rapperShare);
+    /**
+     * @dev Withdraw: 35% each rapper, 30% owner
+     */
+    function withdraw(uint256 _id) external onlyOwner battleExists(_id) {
+        uint256 bal = address(this).balance;
+        require(bal > 0, "No funds");
 
-        // Transfer remainder to owner
+        uint256 share = (bal * 35) / 100;
+        uint256 ownerShare = bal - (share * 2);
+
+        payable(battles[_id].rapper1Address).transfer(share);
+        payable(battles[_id].rapper2Address).transfer(share);
         payable(owner).transfer(ownerShare);
     }
 
     /**
-     * @dev Update voting fee
+     * @dev Set voting fee
      */
-    function setVotingFee(uint256 _newFee) external onlyOwner {
-        votingFee = _newFee;
+    function setVotingFee(uint256 _fee) external onlyOwner {
+        votingFee = _fee;
     }
 }
