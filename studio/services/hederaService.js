@@ -37,7 +37,7 @@ export const hederaService = {
 
     const transaction = new ContractExecuteTransaction()
       .setContractId(BATTLE_CONTRACT_ID)
-      .setGas(1000000)
+      .setGas(100_000_000)
       .setFunction(
         "createBattle",
         new ContractFunctionParameters()
@@ -51,7 +51,7 @@ export const hederaService = {
 
     const txResponse = await transaction.execute(client);
     const receipt = await txResponse.getReceipt(client);
-
+    console.log(receipt)
     // Get the battle ID from contract (it's returned from the function)
     const record = await txResponse.getRecord(client);
     const battleId = record.contractFunctionResult.getUint256(0);
