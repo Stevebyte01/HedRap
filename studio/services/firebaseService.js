@@ -4,11 +4,14 @@ export const firebaseService = {
   // Battles
   async createBattle(battleData) {
     const db = getFirestore();
+
+    // battleData should now include battleId from smart contract
     const docRef = await db.collection("battles").add({
       ...battleData,
       createdAt: new Date(),
       votes: {},
     });
+
     return { id: docRef.id, ...battleData };
   },
 
@@ -25,6 +28,21 @@ export const firebaseService = {
     const db = getFirestore();
     const doc = await db.collection("battles").doc(id).get();
     if (!doc.exists) throw new Error("Battle not found");
+    return { id: doc.id, ...doc.data() };
+  },
+
+  // NEW: Get battle by smart contract battleId
+  async getBattleByContractId(battleId) {
+    const db = getFirestore();
+    const snapshot = await db
+      .collection("battles")
+      .where("battleId", "==", Number(battleId))
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) throw new Error("Battle not found");
+
+    const doc = snapshot.docs[0];
     return { id: doc.id, ...doc.data() };
   },
 

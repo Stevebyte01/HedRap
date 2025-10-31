@@ -11,6 +11,10 @@ import {
   AccountId,
 } from "@hashgraph/sdk";
 import { getHederaClient } from "../config/hedera.js";
+import { Interface } from "ethers";
+
+import dotenv from "dotenv";
+dotenv.config();
 
 // Smart contract ID - set this in your environment variables
 const BATTLE_CONTRACT_ID = process.env.BATTLE_VOTING_ID || "0.0.XXXXXX";
@@ -82,6 +86,16 @@ export const hederaService = {
 
     const txResponse = await transaction.execute(client);
     const receipt = await txResponse.getReceipt(client);
+
+    const record = await txResponse.getRecord(client);
+
+    const errorMessage = Buffer.from(
+      record.contractFunctionResult.errorMessage || ""
+    ).toString();
+
+    if (errorMessage) {
+      console.error("Smart contract revert reason:", errorMessage);
+    }
 
     return {
       transactionId: txResponse.transactionId.toString(),
@@ -155,7 +169,6 @@ export const hederaService = {
    */
   async getBattleWithScores(battleId) {
     const client = getHederaClient();
-
     const query = new ContractCallQuery()
       .setContractId(BATTLE_CONTRACT_ID)
       .setGas(150000)
@@ -165,30 +178,42 @@ export const hederaService = {
       );
 
     const result = await query.execute(client);
+    // Raw bytes returned by the smart contract
+    const rawBytes = result.bytes;
+
+    // Define ABI for decoding
+    const abi = [
+      "function getBattleWithScores(uint256) view returns ((address,address,address,uint256,uint256,uint256,uint256,uint256,uint8),(string,string,string,uint256),uint256,uint256)",
+    ];
+
+    // Use the Interface class from ethers v6
+    const iface = new Interface(abi);
+    const decoded = iface.decodeFunctionResult("getBattleWithScores", rawBytes);
+
+    // decoded is an array of two tuples
+    const [battle_, info_, rapper1Score_, rapper2Score_] = decoded;
 
     // Parse Battle struct, BattleInfo struct, and scores
     const battle = {
-      rapper1Address: result.getAddress(0),
-      rapper2Address: result.getAddress(1),
-      winner: result.getAddress(2),
-      rapper1FanVotes: Number(result.getUint256(3)),
-      rapper2FanVotes: Number(result.getUint256(4)),
-      rapper1JudgeVotes: Number(result.getUint256(5)),
-      rapper2JudgeVotes: Number(result.getUint256(6)),
-      endTime: Number(result.getUint256(7)),
-      status: Number(result.getUint8(8)),
+      rapper1Address: battle_[0],
+      rapper2Address: battle_[1],
+      winner: battle_[2],
+      rapper1FanVotes: Number(battle_[3]),
+      rapper2FanVotes: Number(battle_[4]),
+      rapper1JudgeVotes: Number(battle_[5]),
+      rapper2JudgeVotes: Number(battle_[6]),
+      endTime: Number(battle_[7]),
+      status: Number(battle_[8]),
     };
-
     const info = {
-      rapper1Name: result.getString(9),
-      rapper2Name: result.getString(10),
-      videoUrl: result.getString(11),
-      startTime: Number(result.getUint256(12)),
+      rapper1Name: info_[0],
+      rapper2Name: info_[1],
+      videoUrl: info_[2],
+      startTime: Number(info_[3]),
     };
 
-    const rapper1Score = Number(result.getUint256(13));
-    const rapper2Score = Number(result.getUint256(14));
-
+    const rapper1Score = Number(rapper1Score_);
+    const rapper2Score = Number(rapper2Score_);
     return {
       ...battle,
       ...info,
@@ -341,10 +366,9 @@ export const hederaService = {
       .setFunction("votingFee");
 
     const result = await query.execute(client);
-    const feeInTinybars = Number(result.getUint256(0));
+    const HBar = Number(result.getUint256(0));
 
-    // Convert tinybars to HBAR
-    return feeInTinybars / 100000000;
+    return HBar;
   },
 
   /**
@@ -473,6 +497,118 @@ export const hederaService = {
       status: receipt.status.toString(),
       transactionId: txResponse.transactionId.toString(),
     };
+  },
+
+  // ==================== Balance & Account Functions ====================
+
+  /**
+   * Get account balances using Mirror Node API (faster and doesn't require SDK client)
+   */
+  async getAccountBalances(address) {
+    try {
+      const network = process.env.HEDERA_NETWORK || "testnet";
+      const mirrorNodeUrl =
+        network === "mainnet"
+          ? "https://mainnet-public.mirrornode.hedera.com"
+          : "https://testnet.mirrornode.hedera.com";
+
+      // Convert EVM address to Hedera account ID if needed
+      let accountId = address;
+
+      // If it's an EVM address (0x...), we need to query differently
+      if (address.startsWith("0x")) {
+        // Query by EVM address
+        const response = await fetch(
+          `${mirrorNodeUrl}/api/v1/accounts?account.publickey=${address}`
+        );
+        const data = await response.json();
+
+        if (data.accounts && data.accounts.length > 0) {
+          accountId = data.accounts[0].account;
+        } else {
+          throw new Error("Account not found");
+        }
+      }
+
+      // Get account balance
+      const balanceResponse = await fetch(
+        `${mirrorNodeUrl}/api/v1/accounts/${accountId}`
+      );
+      const balanceData = await balanceResponse.json();
+
+      // Convert tinybars to HBAR
+      const hbarBalance = balanceData.balance.balance / 100000000;
+
+      // Get token balances
+      const tokens = [];
+      let hedrapBalance = 0;
+
+      if (balanceData.balance.tokens && balanceData.balance.tokens.length > 0) {
+        for (const token of balanceData.balance.tokens) {
+          tokens.push({
+            tokenId: token.token_id,
+            balance: token.balance,
+          });
+
+          // Check if this is the HedRap token
+          const hedrapTokenId = process.env.HEDRAP_TOKEN_ID;
+          if (hedrapTokenId && token.token_id === hedrapTokenId) {
+            hedrapBalance = token.balance / Math.pow(10, 8); // Assuming 8 decimals
+          }
+        }
+      }
+
+      return {
+        hbar: hbarBalance,
+        hedrap: hedrapBalance,
+        tokens,
+        accountId,
+      };
+    } catch (error) {
+      console.error("Error fetching account balances:", error);
+      return {
+        hbar: 0,
+        hedrap: 0,
+        tokens: [],
+      };
+    }
+  },
+
+  /**
+   * Get account transactions
+   */
+  async getAccountTransactions(address, limit = 10) {
+    try {
+      const network = process.env.HEDERA_NETWORK || "testnet";
+      const mirrorNodeUrl =
+        network === "mainnet"
+          ? "https://mainnet-public.mirrornode.hedera.com"
+          : "https://testnet.mirrornode.hedera.com";
+
+      let accountId = address;
+
+      // Convert EVM address to account ID if needed
+      if (address.startsWith("0x")) {
+        const response = await fetch(
+          `${mirrorNodeUrl}/api/v1/accounts?account.publickey=${address}`
+        );
+        const data = await response.json();
+
+        if (data.accounts && data.accounts.length > 0) {
+          accountId = data.accounts[0].account;
+        }
+      }
+
+      const txResponse = await fetch(
+        `${mirrorNodeUrl}/api/v1/transactions?account.id=${accountId}&limit=${limit}&order=desc`
+      );
+      const txData = await txResponse.json();
+
+      return txData.transactions || [];
+    } catch (error) {
+      console.error("Error fetching transactions:", error);
+      return [];
+    }
   },
 
   // ==================== DAO Governance Functions ====================
@@ -824,7 +960,7 @@ export const hederaService = {
    */
   async getVotingDelay() {
     const client = getHederaClient();
-    const DAO_CONTRACT_ID = process.env.DAO_CONTRACT_ID;
+    const DAO_CONTRACT_ID = process.env.JUDGE_DAO_ID;
 
     const query = new ContractCallQuery()
       .setContractId(DAO_CONTRACT_ID)
@@ -840,7 +976,7 @@ export const hederaService = {
    */
   async getVotingPeriod() {
     const client = getHederaClient();
-    const DAO_CONTRACT_ID = process.env.JUDGE_DAO_ID;
+    const DAO_CONTRACT_ID = process.env.DAO_CONTRACT_ID;
 
     const query = new ContractCallQuery()
       .setContractId(DAO_CONTRACT_ID)
