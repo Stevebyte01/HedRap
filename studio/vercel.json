@@ -1,0 +1,26 @@
+{
+ "version": 2,
+ "builds": [
+ {
+ "src": "server.js",
+ "use": "@vercel/node"
+ }
+ ],
+ "routes": [
+ {
+ "src": "/api/(.*)",
+ "dest": "server.js"
+ }
+ ],
+"env": {
+  "HEDERA_OPERATOR_KEY": "HEDERA_OPERATOR_KEY",
+  "HEDERA_OPERATOR_ID": "HEDERA_OPERATOR_ID",
+  "HEDERA_NETWORK": "HEDERA_NETWORK",
+  "FIREBASE_PROJECT_ID": "FIREBASE_PROJECT_ID",
+  "FIREBASE_PRIVATE_KEY": "FIREBASE_PRIVATE_KEY",
+  "FIREBASE_CLIENT_EMAIL": "FIREBASE_CLIENT_EMAIL",
+  "BATTLE_VOTING_ID": "BATTLE_VOTING_ID",
+  "JUDGE_DAO_ID": "JUDGE_DAO_ID",
+  "HEDRAP_TOKEN_ID": "HEDRAP_TOKEN_ID"
+}
+}
